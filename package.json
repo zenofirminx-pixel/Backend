@@ -1,0 +1,26 @@
+{
+  "name": "opendc-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "API serverless indépendante de la plateforme OpenDC",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "node --test",
+    "check": "node --check api/index.js && node --check src/app.js && node --check src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "firebase-admin": "^14.5.1",
+    "helmet": "^8.0.0",
+    "openai": "^7.57.0",
+    "zod": "^4.6.7"
+  }
+}
