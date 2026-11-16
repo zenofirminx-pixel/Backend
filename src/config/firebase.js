@@ -1,5 +1,4 @@
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { env } from './env.js';
@@ -33,7 +32,6 @@ if (!app && account) {
 }
 
 export const firebaseConfigured = Boolean(app);
-export const adminAuth = app ? getAuth(app) : null;
 export const db = app ? getFirestore(app) : null;
 export const storage = app ? getStorage(app) : null;
 export { FieldValue };
@@ -45,5 +43,5 @@ export function requireFirebase() {
     error.code = 'FIREBASE_NOT_CONFIGURED';
     throw error;
   }
-  return { adminAuth, db, storage };
+  return { db, storage };
 }

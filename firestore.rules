@@ -1,39 +1,10 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedInAs(uid) {
-      return request.auth != null && request.auth.uid == uid;
-    }
-
-    match /users/{uid} {
-      allow read: if signedInAs(uid);
-      allow create, update: if signedInAs(uid)
-        && request.resource.data.keys().hasOnly([
-          'firstName', 'lastName', 'birthDate', 'gender', 'email', 'photoURL', 'updatedAt'
-        ]);
-      allow delete: if false;
-
-      match /conversations/{conversationId}/messages/{messageId} {
-        allow read: if signedInAs(uid);
-        allow create: if signedInAs(uid)
-          && request.resource.data.keys().hasOnly(['role', 'content', 'createdAt'])
-          && request.resource.data.role in ['user', 'assistant']
-          && request.resource.data.content is string
-          && request.resource.data.content.size() <= 2000;
-        allow update, delete: if false;
-      }
-
-      match /assistantConversations/{conversationId}/messages/{messageId} {
-        // L'historique serveur est écrit avec Firebase Admin (qui contourne ces règles).
-        allow read: if signedInAs(uid);
-        allow write: if false;
-      }
-    }
-
-    match /{collectionName}/{documentId} {
-      allow read: if collectionName in ['projects', 'news', 'services', 'knowledgeBase']
-                  && resource.data.status == 'published';
-      allow write: if false;
+    // Toutes les lectures et écritures passent par l'API OpenDC avec Firebase Admin.
+    // Le SDK Admin contourne ces règles ; aucun client web/mobile ne reçoit d'accès direct.
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
