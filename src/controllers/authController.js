@@ -15,7 +15,11 @@ export const csrf = asyncHandler(async (_req, res) => {
   });
   return success(res, { csrfToken: value });
 });
-export const registerAccount = asyncHandler(async (req, res) => success(res, await register(req.body), 201));
+export const registerAccount = asyncHandler(async (req, res) => {
+  const result = await register(req.body);
+  res.cookie(SESSION_COOKIE, result.sessionToken, COOKIE_OPTIONS(result.maxAge));
+  return success(res, { message: result.message, user: result.user }, 201);
+});
 export const loginAccount = asyncHandler(async (req, res) => {
   const result = await login(req.body.email, req.body.password);
   res.cookie(SESSION_COOKIE, result.sessionToken, COOKIE_OPTIONS(result.maxAge));

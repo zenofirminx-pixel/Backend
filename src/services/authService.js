@@ -56,12 +56,36 @@ export async function register(input) {
     });
   });
   const link = `${env.publicApiUrl}/api/auth/verify-email?token=${encodeURIComponent(verifyToken)}`;
-  await sendActionEmail({
-    to: email, subject: 'Vérifiez votre adresse e-mail OpenDC',
-    text: `Bonjour ${input.firstName},\n\nConfirmez votre adresse e-mail en ouvrant ce lien : ${link}\nCe lien expire dans 24 heures.`,
-    html: `<p>Bonjour ${escapeHtml(input.firstName)},</p><p>Confirmez votre adresse e-mail OpenDC :</p><p><a href="${link}">Vérifier mon adresse e-mail</a></p><p>Ce lien expire dans 24 heures.</p>`
+  try {
+    await sendActionEmail({
+      to: email, subject: 'Vérifiez votre adresse e-mail OpenDC',
+      text: `Bonjour ${input.firstName},\n\nConfirmez votre adresse e-mail en ouvrant ce lien : ${link}\nCe lien expire dans 24 heures.`,
+      html: `<p>Bonjour ${escapeHtml(input.firstName)},</p><p>Confirmez votre adresse e-mail OpenDC :</p><p><a href="${link}">Vérifier mon adresse e-mail</a></p><p>Ce lien expire dans 24 heures.</p>`
+    });
+  } catch (error) {
+    console.error('Échec de l’envoi de vérification :', error.message);
+  }
+  const sessionToken = token();
+  const maxAge = SESSION_DAYS * 86400000;
+
+  await db.collection('authSessions').doc(sha(sessionToken)).set({
+    uid, expiresAt: Date.now() + maxAge,
+    createdAt: FieldValue.serverTimestamp()
   });
-  return { message: 'Compte créé. Consultez votre boîte e-mail pour vérifier votre adresse avant de vous connecter.' };
+
+  return {
+    sessionToken,
+    maxAge,
+    user: safeUser(uid, {
+      email, emailVerified: false,
+      firstName: input.firstName.trim(),
+      lastName: input.lastName.trim(),
+      birthDate: input.birthDate,
+      gender: input.gender,
+      photoURL: ''
+    }),
+    message: 'Compte créé et connexion effectuée.'
+  };
 }
 export async function verifyEmail(rawToken) {
   requireFirebase();
@@ -114,7 +138,7 @@ export async function login(emailInput, password) {
   const user = snap.data();
   const ok = await argon2.verify(user.passwordHash, password).catch(() => false);
   if (!ok) throw httpError(401, 'Adresse e-mail ou mot de passe incorrect.', 'INVALID_CREDENTIALS');
-  if (!user.emailVerified) throw httpError(403, 'Vérifiez votre adresse e-mail avant de vous connecter.', 'EMAIL_NOT_VERIFIED');
+  // La vérification de l'adresse e-mail ne bloque plus la connexion.
   const sessionToken = token();
   const expiresAt = Date.now() + SESSION_DAYS * 86400000;
   await db.collection('authSessions').doc(sha(sessionToken)).set({
@@ -131,7 +155,7 @@ export async function getSessionUser(sessionToken) {
   const data = session.data();
   if (data.expiresAt <= Date.now()) { await sessionRef.delete(); return null; }
   const userSnap = await db.collection('users').doc(data.uid).get();
-  if (!userSnap.exists || !userSnap.data().emailVerified) return null;
+  if (!userSnap.exists) return null;
   return safeUser(data.uid, userSnap.data());
 }
 export async function logout(sessionToken) {
