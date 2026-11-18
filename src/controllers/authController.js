@@ -1,5 +1,11 @@
 
-import { register, login, logout, getSessionUser, verifyEmail, requestPasswordReset, resetPassword, changePassword, resendVerification } from '../services/authService.js';
+import {
+  register, login, logout, getSessionUser, verifyEmail,
+  requestPasswordReset, resetPassword, changePassword,
+  resendVerification, beginTwoFactorSetup, confirmTwoFactorSetup,
+  verifyLoginTwoFactor, disableTwoFactor,
+  regenerateTwoFactorRecoveryCodes
+} from '../services/authService.js';
 import { success, asyncHandler, httpError } from '../utils/http.js';
 
 const SESSION_COOKIE = 'opendc_session';
@@ -20,9 +26,36 @@ export const registerAccount = asyncHandler(async (req, res) => {
   res.cookie(SESSION_COOKIE, result.sessionToken, COOKIE_OPTIONS(result.maxAge));
   return success(res, { message: result.message, user: result.user }, 201);
 });
+const TWO_FACTOR_COOKIE = 'opendc_2fa_challenge';
+
 export const loginAccount = asyncHandler(async (req, res) => {
   const result = await login(req.body.email, req.body.password);
+
+  if (result.twoFactorRequired) {
+    res.cookie(TWO_FACTOR_COOKIE, result.challengeToken, {
+      ...COOKIE_OPTIONS(result.challengeExpiresIn * 1000),
+      maxAge: result.challengeExpiresIn * 1000
+    });
+
+    return success(res, {
+      twoFactorRequired: true,
+      expiresIn: result.challengeExpiresIn
+    });
+  }
+
   res.cookie(SESSION_COOKIE, result.sessionToken, COOKIE_OPTIONS(result.maxAge));
+  return success(res, { user: result.user });
+});
+
+export const verifyLoginTwoFactorAccount = asyncHandler(async (req, res) => {
+  const result = await verifyLoginTwoFactor(
+    req.cookies?.[TWO_FACTOR_COOKIE],
+    req.body.code
+  );
+
+  res.clearCookie(TWO_FACTOR_COOKIE, COOKIE_OPTIONS());
+  res.cookie(SESSION_COOKIE, result.sessionToken, COOKIE_OPTIONS(result.maxAge));
+
   return success(res, { user: result.user });
 });
 export const logoutAccount = asyncHandler(async (req, res) => {
@@ -46,4 +79,36 @@ export const updateAccountPassword = asyncHandler(async (req, res) => {
   await changePassword(req.user.uid, req.body.currentPassword, req.body.newPassword);
   res.clearCookie(SESSION_COOKIE, COOKIE_OPTIONS());
   return success(res, { message: 'Mot de passe modifié. Reconnectez-vous.' });
+});
+
+
+// Prépare la configuration de la double authentification.
+export const setupTwoFactor = asyncHandler(async (req, res) => {
+  const result = await beginTwoFactorSetup(req.user.uid, req.body.currentPassword);
+  return success(res, result);
+});
+
+// Confirme la configuration et retourne les codes de récupération.
+export const confirmTwoFactor = asyncHandler(async (req, res) => {
+  const result = await confirmTwoFactorSetup(req.user.uid, req.body.code);
+  return success(res, result);
+});
+
+
+export const disableTwoFactorAccount = asyncHandler(async (req, res) => {
+  const result = await disableTwoFactor(
+    req.user.uid,
+    req.body.currentPassword,
+    req.body.code
+  );
+  return success(res, result);
+});
+
+export const regenerateTwoFactorRecoveryCodesAccount = asyncHandler(async (req, res) => {
+  const result = await regenerateTwoFactorRecoveryCodes(
+    req.user.uid,
+    req.body.currentPassword,
+    req.body.code
+  );
+  return success(res, result);
 });

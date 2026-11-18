@@ -23,6 +23,7 @@ export const env = Object.freeze({
   smtpUser: process.env.SMTP_USER || '',
   smtpPassword: process.env.SMTP_PASSWORD || '',
   mailFrom: process.env.MAIL_FROM || '',
+  totpEncryptionKey: process.env.TOTP_ENCRYPTION_KEY || '',
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
   openaiMaxOutputTokens: positiveInt(process.env.OPENAI_MAX_OUTPUT_TOKENS, 900),

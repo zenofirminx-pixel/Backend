@@ -6,6 +6,14 @@ import nodemailer from 'nodemailer';
 import { db, FieldValue, requireFirebase } from '../config/firebase.js';
 import { env } from '../config/env.js';
 import { httpError } from '../utils/http.js';
+import {
+  createTotpEnrollment,
+  encryptTotpSecret,
+  decryptTotpSecret,
+  verifyTotpCode,
+  createRecoveryCodes,
+  verifyRecoveryCode
+} from './totpService.js';
 
 const SESSION_DAYS = 7;
 const VERIFY_HOURS = 24;
@@ -17,7 +25,8 @@ const safeUser = (uid, data) => ({
   uid, email: data.email, emailVerified: Boolean(data.emailVerified),
   firstName: data.firstName || '', lastName: data.lastName || '',
   birthDate: data.birthDate || '', gender: data.gender || '',
-  photoURL: data.photoURL || ''
+  photoURL: data.photoURL || '',
+  twoFactorEnabled: Boolean(data.twoFactorEnabled)
 });
 function mailer() {
   if (!env.smtpHost || !env.smtpUser || !env.smtpPassword || !env.mailFrom) {
@@ -129,22 +138,59 @@ export async function resendVerification(emailInput) {
 
 export async function login(emailInput, password) {
   requireFirebase();
+
   const email = emailInput.trim().toLowerCase();
   const index = await db.collection('authEmailIndex').doc(emailKey(email)).get();
-  if (!index.exists) throw httpError(401, 'Adresse e-mail ou mot de passe incorrect.', 'INVALID_CREDENTIALS');
-  const userRef = db.collection('users').doc(index.data().uid);
+
+  if (!index.exists) {
+    throw httpError(401, 'Adresse e-mail ou mot de passe incorrect.', 'INVALID_CREDENTIALS');
+  }
+
+  const uid = index.data().uid;
+  const userRef = db.collection('users').doc(uid);
   const snap = await userRef.get();
-  if (!snap.exists || !snap.data().passwordHash) throw httpError(401, 'Adresse e-mail ou mot de passe incorrect.', 'INVALID_CREDENTIALS');
+
+  if (!snap.exists || !snap.data().passwordHash) {
+    throw httpError(401, 'Adresse e-mail ou mot de passe incorrect.', 'INVALID_CREDENTIALS');
+  }
+
   const user = snap.data();
   const ok = await argon2.verify(user.passwordHash, password).catch(() => false);
-  if (!ok) throw httpError(401, 'Adresse e-mail ou mot de passe incorrect.', 'INVALID_CREDENTIALS');
-  // La vérification de l'adresse e-mail ne bloque plus la connexion.
+
+  if (!ok) {
+    throw httpError(401, 'Adresse e-mail ou mot de passe incorrect.', 'INVALID_CREDENTIALS');
+  }
+
+  if (user.twoFactorEnabled) {
+    const challengeToken = token();
+
+    await db.collection('authTwoFactorChallenges').doc(sha(challengeToken)).set({
+      uid,
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      attempts: 0,
+      createdAt: FieldValue.serverTimestamp()
+    });
+
+    return {
+      twoFactorRequired: true,
+      challengeToken,
+      challengeExpiresIn: 300
+    };
+  }
+
   const sessionToken = token();
-  const expiresAt = Date.now() + SESSION_DAYS * 86400000;
+
   await db.collection('authSessions').doc(sha(sessionToken)).set({
-    uid: index.data().uid, expiresAt, createdAt: FieldValue.serverTimestamp()
+    uid,
+    expiresAt: Date.now() + SESSION_DAYS * 86400000,
+    createdAt: FieldValue.serverTimestamp()
   });
-  return { sessionToken, maxAge: SESSION_DAYS * 86400000, user: safeUser(index.data().uid, user) };
+
+  return {
+    sessionToken,
+    maxAge: SESSION_DAYS * 86400000,
+    user: safeUser(uid, user)
+  };
 }
 export async function getSessionUser(sessionToken) {
   if (!sessionToken) return null;
@@ -226,3 +272,333 @@ export async function resetPassword(rawToken, password) {
   return { message: 'Mot de passe réinitialisé. Vous pouvez vous connecter.' };
 }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+
+// Prépare l'activation de la double authentification.
+export async function beginTwoFactorSetup(uid, currentPassword) {
+  requireFirebase();
+
+  const userRef = db.collection('users').doc(uid);
+  const userSnap = await userRef.get();
+
+  if (!userSnap.exists) {
+    throw httpError(404, 'Compte introuvable.', 'USER_NOT_FOUND');
+  }
+
+  const user = userSnap.data();
+
+  if (!user.passwordHash || !await argon2.verify(user.passwordHash, currentPassword).catch(() => false)) {
+    throw httpError(401, 'Mot de passe actuel incorrect.', 'INVALID_CREDENTIALS');
+  }
+
+  if (user.twoFactorEnabled) {
+    throw httpError(409, 'La double authentification est déjà activée.', 'TOTP_ALREADY_ENABLED');
+  }
+
+  const enrollment = await createTotpEnrollment(userSnap.data().email);
+  const encryptedSecret = encryptTotpSecret(enrollment.secret);
+
+  await userRef.update({
+    totpPendingSecret: encryptedSecret,
+    totpPendingExpiresAt: Date.now() + 10 * 60 * 1000,
+    updatedAt: FieldValue.serverTimestamp()
+  });
+
+  return {
+    qrCode: enrollment.qrCode,
+    manualEntryKey: enrollment.manualEntryKey,
+    expiresIn: 600
+  };
+}
+
+// Confirme l'activation après vérification du premier code TOTP.
+export async function confirmTwoFactorSetup(uid, code) {
+  requireFirebase();
+
+  const userRef = db.collection('users').doc(uid);
+  const userSnap = await userRef.get();
+
+  if (!userSnap.exists) {
+    throw httpError(404, 'Compte introuvable.', 'USER_NOT_FOUND');
+  }
+
+  const user = userSnap.data();
+
+  if (user.twoFactorEnabled) {
+    throw httpError(409, 'La double authentification est déjà activée.', 'TOTP_ALREADY_ENABLED');
+  }
+
+  if (
+    !user.totpPendingSecret ||
+    !user.totpPendingExpiresAt ||
+    user.totpPendingExpiresAt <= Date.now()
+  ) {
+    throw httpError(400, 'La configuration 2FA a expiré. Recommencez.', 'TOTP_SETUP_EXPIRED');
+  }
+
+  const secret = decryptTotpSecret(user.totpPendingSecret);
+
+  if (!verifyTotpCode(secret, code)) {
+    throw httpError(400, 'Code de vérification incorrect.', 'INVALID_TOTP_CODE');
+  }
+
+  const recovery = createRecoveryCodes();
+
+  await db.runTransaction(async tx => {
+    const latest = await tx.get(userRef);
+
+    if (
+      !latest.exists ||
+      latest.data().twoFactorEnabled ||
+      !latest.data().totpPendingSecret ||
+      latest.data().totpPendingExpiresAt <= Date.now()
+    ) {
+      throw httpError(409, 'La configuration 2FA a changé. Recommencez.', 'TOTP_SETUP_CHANGED');
+    }
+
+    tx.update(userRef, {
+      twoFactorEnabled: true,
+      totpSecret: user.totpPendingSecret,
+      totpRecoveryHashes: recovery.hashes,
+      totpPendingSecret: FieldValue.delete(),
+      totpPendingExpiresAt: FieldValue.delete(),
+      twoFactorEnabledAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+  });
+
+  return {
+    message: 'La double authentification est maintenant activée.',
+    recoveryCodes: recovery.codes
+  };
+}
+
+
+// Termine une connexion après validation du deuxième facteur.
+export async function verifyLoginTwoFactor(challengeToken, code) {
+  requireFirebase();
+
+  if (!challengeToken) {
+    throw httpError(401, 'Défi de connexion absent.', 'TWO_FACTOR_CHALLENGE_INVALID');
+  }
+
+  const challengeRef = db.collection('authTwoFactorChallenges').doc(sha(challengeToken));
+  const challengeSnap = await challengeRef.get();
+
+  if (!challengeSnap.exists) {
+    throw httpError(401, 'Défi de connexion invalide.', 'TWO_FACTOR_CHALLENGE_INVALID');
+  }
+
+  const challenge = challengeSnap.data();
+
+  if (challenge.expiresAt <= Date.now() || challenge.attempts >= 5) {
+    await challengeRef.delete();
+    throw httpError(401, 'Défi de connexion expiré.', 'TWO_FACTOR_CHALLENGE_EXPIRED');
+  }
+
+  const userRef = db.collection('users').doc(challenge.uid);
+  const userSnap = await userRef.get();
+
+  if (!userSnap.exists || !userSnap.data().twoFactorEnabled || !userSnap.data().totpSecret) {
+    await challengeRef.delete();
+    throw httpError(401, 'Configuration 2FA invalide.', 'TWO_FACTOR_INVALID');
+  }
+
+  const user = userSnap.data();
+  const secret = decryptTotpSecret(user.totpSecret);
+  const totpValid = verifyTotpCode(secret, code);
+  const recoveryIndex = totpValid
+    ? -1
+    : verifyRecoveryCode(code, user.totpRecoveryHashes || []);
+
+  if (!totpValid && recoveryIndex === -1) {
+    const attempts = challenge.attempts + 1;
+
+    if (attempts >= 5) {
+      await challengeRef.delete();
+    } else {
+      await challengeRef.update({ attempts });
+    }
+
+    throw httpError(401, 'Code de vérification incorrect.', 'INVALID_TWO_FACTOR_CODE');
+  }
+
+  const sessionToken = token();
+  const sessionRef = db.collection('authSessions').doc(sha(sessionToken));
+
+  await db.runTransaction(async tx => {
+    const latestChallenge = await tx.get(challengeRef);
+    const latestUser = await tx.get(userRef);
+
+    if (
+      !latestChallenge.exists ||
+      !latestUser.exists ||
+      latestChallenge.data().expiresAt <= Date.now() ||
+      latestChallenge.data().attempts >= 5 ||
+      !latestUser.data().twoFactorEnabled
+    ) {
+      throw httpError(401, 'Défi de connexion expiré ou invalide.', 'TWO_FACTOR_CHALLENGE_INVALID');
+    }
+
+    const latest = latestUser.data();
+
+    if (recoveryIndex !== -1) {
+      const hashes = [...(latest.totpRecoveryHashes || [])];
+      const currentIndex = verifyRecoveryCode(code, hashes);
+
+      if (currentIndex === -1) {
+        throw httpError(401, 'Code de récupération déjà utilisé.', 'RECOVERY_CODE_USED');
+      }
+
+      hashes.splice(currentIndex, 1);
+
+      tx.update(userRef, {
+        totpRecoveryHashes: hashes,
+        updatedAt: FieldValue.serverTimestamp()
+      });
+    } else {
+      const latestSecret = decryptTotpSecret(latest.totpSecret);
+
+      if (!verifyTotpCode(latestSecret, code)) {
+        throw httpError(401, 'Code de vérification incorrect.', 'INVALID_TWO_FACTOR_CODE');
+      }
+    }
+
+    tx.delete(challengeRef);
+
+    tx.set(sessionRef, {
+      uid: challenge.uid,
+      expiresAt: Date.now() + SESSION_DAYS * 86400000,
+      createdAt: FieldValue.serverTimestamp()
+    });
+  });
+
+  const finalUser = await userRef.get();
+
+  return {
+    sessionToken,
+    maxAge: SESSION_DAYS * 86400000,
+    user: safeUser(challenge.uid, finalUser.data())
+  };
+}
+
+
+// Vérifie le mot de passe et le second facteur avant une opération sensible.
+async function verifyTwoFactorManagement(uid, currentPassword, code) {
+  const userRef = db.collection('users').doc(uid);
+  const snap = await userRef.get();
+
+  if (!snap.exists) {
+    throw httpError(404, 'Compte introuvable.', 'USER_NOT_FOUND');
+  }
+
+  const user = snap.data();
+
+  if (!user.twoFactorEnabled || !user.totpSecret) {
+    throw httpError(400, 'La double authentification est désactivée.', 'TOTP_NOT_ENABLED');
+  }
+
+  const passwordValid = await argon2.verify(
+    user.passwordHash || '',
+    currentPassword
+  ).catch(() => false);
+
+  if (!passwordValid) {
+    throw httpError(401, 'Mot de passe actuel incorrect.', 'INVALID_CREDENTIALS');
+  }
+
+  const secret = decryptTotpSecret(user.totpSecret);
+  const totpValid = verifyTotpCode(secret, code);
+  const recoveryIndex = totpValid
+    ? -1
+    : verifyRecoveryCode(code, user.totpRecoveryHashes || []);
+
+  if (!totpValid && recoveryIndex === -1) {
+    throw httpError(401, 'Code de vérification incorrect.', 'INVALID_TWO_FACTOR_CODE');
+  }
+
+  return { userRef, recoveryIndex, code, totpValid };
+}
+
+// Désactive la double authentification après une double vérification.
+export async function disableTwoFactor(uid, currentPassword, code) {
+  requireFirebase();
+
+  const verified = await verifyTwoFactorManagement(uid, currentPassword, code);
+
+  await db.runTransaction(async tx => {
+    const latest = await tx.get(verified.userRef);
+
+    if (!latest.exists || !latest.data().twoFactorEnabled) {
+      throw httpError(409, 'La configuration 2FA a changé.', 'TOTP_STATE_CHANGED');
+    }
+
+    if (verified.recoveryIndex !== -1) {
+      const hashes = [...(latest.data().totpRecoveryHashes || [])];
+      const index = verifyRecoveryCode(verified.code, hashes);
+
+      if (index === -1) {
+        throw httpError(401, 'Code de récupération déjà utilisé.', 'RECOVERY_CODE_USED');
+      }
+
+      hashes.splice(index, 1);
+    } else {
+      const secret = decryptTotpSecret(latest.data().totpSecret);
+
+      if (!verifyTotpCode(secret, verified.code)) {
+        throw httpError(401, 'Code TOTP invalide.', 'INVALID_TWO_FACTOR_CODE');
+      }
+    }
+
+    tx.update(verified.userRef, {
+      twoFactorEnabled: false,
+      totpSecret: FieldValue.delete(),
+      totpRecoveryHashes: FieldValue.delete(),
+      twoFactorEnabledAt: FieldValue.delete(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+  });
+
+  return { message: 'La double authentification a été désactivée.' };
+}
+
+// Remplace tous les anciens codes de récupération.
+export async function regenerateTwoFactorRecoveryCodes(uid, currentPassword, code) {
+  requireFirebase();
+
+  const verified = await verifyTwoFactorManagement(uid, currentPassword, code);
+  const recovery = createRecoveryCodes();
+
+  await db.runTransaction(async tx => {
+    const latest = await tx.get(verified.userRef);
+
+    if (!latest.exists || !latest.data().twoFactorEnabled) {
+      throw httpError(409, 'La configuration 2FA a changé.', 'TOTP_STATE_CHANGED');
+    }
+
+    if (verified.recoveryIndex !== -1) {
+      const hashes = [...(latest.data().totpRecoveryHashes || [])];
+      const index = verifyRecoveryCode(verified.code, hashes);
+
+      if (index === -1) {
+        throw httpError(401, 'Code de récupération déjà utilisé.', 'RECOVERY_CODE_USED');
+      }
+    } else {
+      const secret = decryptTotpSecret(latest.data().totpSecret);
+
+      if (!verifyTotpCode(secret, verified.code)) {
+        throw httpError(401, 'Code TOTP invalide.', 'INVALID_TWO_FACTOR_CODE');
+      }
+    }
+
+    tx.update(verified.userRef, {
+      totpRecoveryHashes: recovery.hashes,
+      updatedAt: FieldValue.serverTimestamp()
+    });
+  });
+
+  return {
+    message: 'Les codes de récupération ont été renouvelés.',
+    recoveryCodes: recovery.codes
+  };
+}
