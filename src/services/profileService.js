@@ -1,14 +1,31 @@
 
 import { db, FieldValue, requireFirebase } from '../config/firebase.js';
 import { httpError } from '../utils/http.js';
-const PROFILE_FIELDS = ['firstName', 'lastName', 'birthDate', 'gender', 'photoURL'];
+const PROFILE_FIELDS = ['firstName', 'lastName', 'birthDate', 'gender'];
+
 export async function getProfile(uid) {
   requireFirebase();
-  const snap = await db.collection('users').doc(uid).get();
+
+  const [snap, avatarSnap] = await Promise.all([
+    db.collection('users').doc(uid).get(),
+    db.collection('avatars').doc(uid).get()
+  ]);
+
   const data = snap.exists ? snap.data() : {};
-  return { uid, firstName: data.firstName || '', lastName: data.lastName || '',
-    birthDate: data.birthDate || '', gender: data.gender || '',
-    email: data.email || '', emailVerified: Boolean(data.emailVerified), photoURL: data.photoURL || '' };
+  const avatar = avatarSnap.exists ? avatarSnap.data() : {};
+
+  return {
+    uid,
+    firstName: data.firstName || '',
+    lastName: data.lastName || '',
+    birthDate: data.birthDate || '',
+    gender: data.gender || '',
+    email: data.email || '',
+    emailVerified: Boolean(data.emailVerified),
+    photoURL: avatar.data
+      ? `data:${avatar.contentType || 'image/webp'};base64,${avatar.data}`
+      : data.photoURL || ''
+  };
 }
 export async function updateProfile(uid, patch) {
   requireFirebase();
