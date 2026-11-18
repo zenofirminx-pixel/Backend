@@ -38,7 +38,12 @@ const twoFactorLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 5,
   standardHeaders: 'draft-7',
-  legacyHeaders: false
+  legacyHeaders: false,
+  message: {
+    success: false,
+    code: 'TWO_FACTOR_RATE_LIMITED',
+    message: 'Trop de tentatives de vérification. Veuillez patienter 15 minutes avant de réessayer.'
+  }
 });
 
 router.post('/2fa/login', authLimiter, requireCsrf,
@@ -66,7 +71,7 @@ router.post('/2fa/setup', requireAuth, requireCsrf, twoFactorLimiter,
   validateBody(z.object({ currentPassword: password }).strict()),
   setupTwoFactor);
 router.post('/2fa/confirm', requireAuth, requireCsrf, twoFactorLimiter,
-  validateBody(z.object({ code: z.string().regex(/^\\d{6}$/) }).strict()),
+  validateBody(z.object({ code: z.string().regex(/^\d{6}$/) }).strict()),
   confirmTwoFactor);
 
 router.post('/change-password', requireAuth, requireCsrf, validateBody(z.object({ currentPassword: password, newPassword: password }).strict()), updateAccountPassword);
