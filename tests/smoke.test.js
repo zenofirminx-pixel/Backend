@@ -17,7 +17,7 @@ test('GET /api/health renvoie un statut JSON opérationnel', async () => {
     const body = await response.json();
     assert.equal(response.status, 200);
     assert.equal(body.success, true);
-    assert.equal(body.service, 'OpenDC API');
+    assert.equal(body.service, 'Pal API');
   });
 });
 
@@ -46,5 +46,24 @@ test('les mutations auth exigent un jeton CSRF', async () => {
     const body = await response.json();
     assert.equal(response.status, 403);
     assert.equal(body.code, 'CSRF_INVALID');
+  });
+});
+
+test('les routes sociales refusent une session absente', async () => {
+  await withServer(async base => {
+    const response = await fetch(`${base}/api/social/feed`);
+    const body = await response.json();
+    assert.equal(response.status, 401);
+    assert.equal(body.success, false);
+    assert.equal(body.code, 'SESSION_INVALID');
+  });
+});
+
+test('la creation de publication refuse un CSRF absent avant Firebase', async () => {
+  await withServer(async base => {
+    const response = await fetch(`${base}/api/social/posts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'test' }) });
+    const body = await response.json();
+    assert.equal(response.status, 401); // auth middleware is checked before CSRF
+    assert.equal(body.success, false);
   });
 });

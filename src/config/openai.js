@@ -5,7 +5,7 @@ let client;
 
 export function getOpenAI() {
   if (!env.openaiApiKey) {
-    const error = new Error('Le service IA OpenDC n’est pas encore configuré.');
+    const error = new Error('Le service IA Pal n’est pas encore configuré.');
     error.status = 503;
     error.code = 'OPENAI_NOT_CONFIGURED';
     throw error;

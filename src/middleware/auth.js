@@ -3,7 +3,7 @@ import { getSessionUser } from '../services/authService.js';
 import { httpError } from '../utils/http.js';
 export async function requireAuth(req, _res, next) {
   try {
-    const user = await getSessionUser(req.cookies?.opendc_session);
+    const user = await getSessionUser(req.cookies?.pal_session);
     if (!user) throw httpError(401, 'Session absente ou expirée.', 'SESSION_INVALID');
     req.user = user;
     next();

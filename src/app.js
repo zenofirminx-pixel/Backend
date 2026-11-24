@@ -6,13 +6,14 @@ import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import { env } from './config/env.js';
 import { requireAuth } from './middleware/auth.js';
+import { requireVerifiedEmail } from './middleware/requireVerifiedEmail.js';
 import { requireCsrf } from './middleware/csrf.js';
 import { errorHandler, notFound } from './middleware/errorHandler.js';
 import { asyncHandler, success, httpError } from './utils/http.js';
 import authRoutes from './routes/authRoutes.js';
 import assistantRoutes from './routes/assistantRoutes.js';
 import profileRoutes from './routes/profileRoutes.js';
-import contentRoutes from './routes/contentRoutes.js';
+import socialRoutes from './routes/socialRoutes.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -24,11 +25,11 @@ app.use(cors({
     return callback(httpError(403, 'Cette origine n’est pas autorisée par CORS.', 'CORS_ORIGIN_DENIED'));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PATCH', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Accept', 'X-CSRF-Token'],
   maxAge: 86400
 }));
-app.use(express.json({ limit: '32kb', strict: true }));
+app.use(express.json({ limit: '700kb', strict: true }));
 app.use(cookieParser());
 app.use(rateLimit({
   windowMs: env.rateLimitWindowMs, limit: env.rateLimitMaxRequests,
@@ -36,7 +37,7 @@ app.use(rateLimit({
   message: { success: false, code: 'RATE_LIMITED', message: 'Trop de requêtes. Réessayez plus tard.' }
 }));
 app.get('/api/health', (_req, res) => success(res, {
-  service: 'OpenDC API', status: 'ok', timestamp: new Date().toISOString()
+  service: 'Pal API', status: 'ok', timestamp: new Date().toISOString()
 }));
 app.use('/api/auth', authRoutes);
 const assistantLimiter = rateLimit({
@@ -44,7 +45,7 @@ const assistantLimiter = rateLimit({
   standardHeaders: 'draft-7', legacyHeaders: false,
   message: { success: false, code: 'ASSISTANT_RATE_LIMITED', message: 'Limite de messages atteinte. Réessayez dans une minute.' }
 });
-app.use('/api', contentRoutes);
+app.use('/api/social', requireAuth, requireVerifiedEmail, socialRoutes);
 app.use('/api/profile', requireAuth, profileRoutes);
 app.use('/api/assistant', requireAuth, requireCsrf, assistantLimiter, assistantRoutes);
 app.use(notFound);

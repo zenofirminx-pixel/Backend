@@ -2,7 +2,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { httpError } from '../utils/http.js';
 export function requireCsrf(req, _res, next) {
-  const cookie = req.cookies?.opendc_csrf || '';
+  const cookie = req.cookies?.pal_csrf || '';
   const header = req.get('X-CSRF-Token') || '';
   const a = Buffer.from(cookie);
   const b = Buffer.from(header);

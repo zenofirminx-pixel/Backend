@@ -5,7 +5,7 @@ export function notFound(_req, res) {
 export function errorHandler(error, _req, res, _next) {
   if (res.headersSent) return;
   const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : Number.isInteger(error.status) ? error.status : error instanceof ZodError ? 400 : 500;
-  if (status >= 500) console.error('[OpenDC API]', error);
+  if (status >= 500) console.error('[Pal API]', error);
   res.status(status).json({
     success: false,
     code: error.code === 'LIMIT_FILE_SIZE' ? 'AVATAR_TOO_LARGE' : error.code || (status >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR'),

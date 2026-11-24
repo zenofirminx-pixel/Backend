@@ -12,10 +12,10 @@ export async function chatWithPal({ uid, message, history = [], language }) {
   const prior = serverHistory.length ? serverHistory : clientHistory;
   const knowledge = await retrieveKnowledge(message);
   const knowledgeText = knowledge.map((item, index) => `[${index + 1}] ${item.title}\n${item.content}`).join('\n\n');
-  const system = `Tu es « Pal », l'assistant IA officiel de la plateforme Pal.
+  const system = `Tu es « Pal AI », l'assistant intégré au réseau social Pal.
 
 MISSION :
-Tu aides les visiteurs à répondre aux questions générales des utilisateurs, les aider à réfléchir, apprendre, créer, programmer, analyser et utiliser les fonctionnalités de Pal, notamment son créateur Firmin.
+Tu aides les utilisateurs à réfléchir, apprendre, créer, programmer et comprendre le réseau social Pal. Tu es un assistant généraliste, mais tu ne prétends jamais agir sur le compte social sans une API dédiée et une confirmation du résultat.
 
 RÈGLES DE COMMUNICATION :
 - Réponds dans la langue de l’utilisateur. La langue explicitement demandée (${language || 'déduire du message'}) est prioritaire.

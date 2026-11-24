@@ -23,7 +23,7 @@ const token = () => crypto.randomBytes(32).toString('base64url');
 const emailKey = (email) => sha(email.trim().toLowerCase());
 const safeUser = (uid, data) => ({
   uid, email: data.email, emailVerified: Boolean(data.emailVerified),
-  firstName: data.firstName || '', lastName: data.lastName || '',
+  firstName: data.firstName || '', lastName: data.lastName || '', username: data.username || '',
   birthDate: data.birthDate || '', gender: data.gender || '',
   photoURL: data.photoURL || '',
   twoFactorEnabled: Boolean(data.twoFactorEnabled)
@@ -49,15 +49,26 @@ export async function register(input) {
   const passwordHash = await argon2.hash(input.password, { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 });
   const userRef = db.collection('users').doc(uid);
   const emailRef = db.collection('authEmailIndex').doc(key);
+  const username = (input.username || '').trim().toLowerCase();
+  const usernameRef = username ? db.collection('authUsernameIndex').doc(username) : null;
   await db.runTransaction(async tx => {
     const existing = await tx.get(emailRef);
+    const existingUsername = usernameRef ? await tx.get(usernameRef) : null;
     if (existing.exists) throw httpError(409, 'Cette adresse e-mail possède déjà un compte.', 'EMAIL_ALREADY_EXISTS');
+    if (existingUsername?.exists) throw httpError(409, 'Ce nom d’utilisateur est déjà utilisé.', 'USERNAME_ALREADY_EXISTS');
     tx.create(emailRef, { uid, email, createdAt: FieldValue.serverTimestamp() });
+    if (usernameRef) tx.create(usernameRef, { uid, username, createdAt: FieldValue.serverTimestamp() });
     tx.create(userRef, {
       email, emailNormalized: email, passwordHash, emailVerified: false,
-      firstName: input.firstName.trim(), lastName: input.lastName.trim(),
+      firstName: input.firstName.trim(), lastName: input.lastName.trim(), username,
       birthDate: input.birthDate, gender: input.gender,
       photoURL: '', createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp()
+    });
+    tx.set(db.collection('userSearch').doc(uid), {
+      firstName: input.firstName.trim(), lastName: input.lastName.trim(),
+      firstNameLower: input.firstName.trim().toLowerCase(), lastNameLower: input.lastName.trim().toLowerCase(),
+      username, usernameLower: username,
+      photoURL: '', createdAt: FieldValue.serverTimestamp()
     });
     tx.create(db.collection('authActionTokens').doc(sha(verifyToken)), {
       uid, purpose: 'verify-email', expiresAt: Date.now() + VERIFY_HOURS * 3600000,
@@ -67,9 +78,9 @@ export async function register(input) {
   const link = `${env.publicApiUrl}/api/auth/verify-email?token=${encodeURIComponent(verifyToken)}`;
   try {
     await sendActionEmail({
-      to: email, subject: 'Vérifiez votre adresse e-mail OpenDC',
+      to: email, subject: 'Vérifiez votre adresse e-mail Pal',
       text: `Bonjour ${input.firstName},\n\nConfirmez votre adresse e-mail en ouvrant ce lien : ${link}\nCe lien expire dans 24 heures.`,
-      html: `<p>Bonjour ${escapeHtml(input.firstName)},</p><p>Confirmez votre adresse e-mail OpenDC :</p><p><a href="${link}">Vérifier mon adresse e-mail</a></p><p>Ce lien expire dans 24 heures.</p>`
+      html: `<p>Bonjour ${escapeHtml(input.firstName)},</p><p>Confirmez votre adresse e-mail Pal :</p><p><a href="${link}">Vérifier mon adresse e-mail</a></p><p>Ce lien expire dans 24 heures.</p>`
     });
   } catch (error) {
     console.error('Échec de l’envoi de vérification :', error.message);
@@ -89,6 +100,7 @@ export async function register(input) {
       email, emailVerified: false,
       firstName: input.firstName.trim(),
       lastName: input.lastName.trim(),
+      username,
       birthDate: input.birthDate,
       gender: input.gender,
       photoURL: ''
@@ -127,9 +139,9 @@ export async function resendVerification(emailInput) {
       });
       const link = `${env.publicApiUrl}/api/auth/verify-email?token=${encodeURIComponent(verifyToken)}`;
       await sendActionEmail({
-        to: email, subject: 'Vérifiez votre adresse e-mail OpenDC',
+        to: email, subject: 'Vérifiez votre adresse e-mail Pal',
         text: `Confirmez votre adresse e-mail avec ce lien : ${link}`,
-        html: `<p>Confirmez votre adresse e-mail OpenDC :</p><p><a href="${link}">Vérifier mon adresse e-mail</a></p>`
+        html: `<p>Confirmez votre adresse e-mail Pal :</p><p><a href="${link}">Vérifier mon adresse e-mail</a></p>`
       });
     }
   }
@@ -245,7 +257,7 @@ export async function requestPasswordReset(emailInput) {
     });
     const link = `${env.frontendUrl}/auth?mode=reset&token=${encodeURIComponent(resetToken)}`;
     await sendActionEmail({
-      to: email, subject: 'Réinitialisation du mot de passe OpenDC',
+      to: email, subject: 'Réinitialisation du mot de passe Pal',
       text: `Réinitialisez votre mot de passe avec ce lien : ${link}\nCe lien expire dans 30 minutes.`,
       html: `<p>Pour choisir un nouveau mot de passe, ouvrez ce lien :</p><p><a href="${link}">Réinitialiser mon mot de passe</a></p><p>Ce lien expire dans 30 minutes.</p>`
     });

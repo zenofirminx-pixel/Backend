@@ -1,109 +1,125 @@
+# Pal Backend
 
-# OpenDC Backend — authentification serveur
+Backend Node.js + Express pour le réseau social Pal, avec Firestore via Firebase Admin SDK, compatible Vercel. L'authentification et les sessions sont gérées côté serveur (pas Firebase Auth).
 
-API Node.js + Express, Firestore via Firebase Admin SDK, déployable sur Vercel. Firebase Authentication n'est pas utilisé.
-
-## Authentification
-
-- Inscriptions et connexions gérées exclusivement par l'API.
-- Mots de passe hachés avec Argon2id ; aucun mot de passe brut n'est conservé.
-- Sessions opaques aléatoires, seul leur SHA-256 est stocké dans `authSessions`.
-- Cookie de session `HttpOnly`, `SameSite=Strict`, `Secure` en production.
-- Jeton CSRF synchronisé dans un cookie dédié et envoyé dans `X-CSRF-Token`.
-- Origines CORS autorisées explicitement, avec `credentials: true`.
-- Index e-mail séparé et transactionnel (`authEmailIndex`) pour empêcher les doublons.
-- Vérification d'adresse e-mail et réinitialisation via liens à durée limitée, à usage unique.
-- Limitation de débit globale et sur les routes sensibles.
+## Sécurité et sessions
+- Inscription et connexion via l'API, mots de passe Argon2id.
+- Sessions aléatoires opaques, hash SHA-256 stocké dans `authSessions`, cookie HttpOnly `pal_session`.
+- Cookie CSRF `pal_csrf`, jeton envoyé dans `X-CSRF-Token` pour les mutations.
+- CORS limité aux origines configurées; limitation de débit.
+- E-mails de vérification et réinitialisation à usage unique; 2FA TOTP chiffrée AES-256-GCM.
+- Les règles Firestore/Storage interdisent l'accès direct client; le backend Admin est le seul accès.
 
 ## Routes
 
+### État
+| Méthode | Route | Auth | Description |
+|---|---|---|---|
+| GET | `/api/health` | Non | Santé API |
+| GET | `/api/auth/csrf` | Non | Initialise le cookie CSRF et retourne le jeton |
+
+### Authentification (`/api/auth`)
 | Méthode | Route | Description |
 |---|---|---|
-| GET | `/api/health` | État de l'API |
-| GET | `/api/auth/csrf` | Initialise le cookie CSRF et renvoie le jeton |
-| POST | `/api/auth/register` | Crée un compte et envoie le lien de vérification |
-| POST | `/api/auth/login` | Vérifie Argon2id et ouvre une session |
-| POST | `/api/auth/resend-verification` | Renvoie le lien de vérification |
-| POST | `/api/auth/logout` | Révoque la session et efface le cookie |
-| GET | `/api/auth/me` | Retourne l'utilisateur de la session |
-| GET | `/api/auth/verify-email?token=...` | Vérifie l'adresse e-mail |
-| POST | `/api/auth/forgot-password` | Envoie un lien de réinitialisation |
-| POST | `/api/auth/reset-password` | Définit un nouveau mot de passe |
-| POST | `/api/auth/change-password` | Change le mot de passe de la session |
-| GET/PATCH | `/api/profile` | Lit/met à jour le profil |
-| POST | `/api/profile/avatar` | Téléverse un avatar (5 Mo max.) |
-| POST | `/api/assistant/chat` | Assistant OpenDC, session requise |
-| GET | `/api/projects`, `/api/news`, `/api/services` | Contenus publiés |
+| POST | `/register` | Création de compte (firstName, lastName, birthDate, gender, email, password; username facultatif) |
+| POST | `/login` | Connexion; peut demander une vérification 2FA |
+| POST | `/2fa/login` | Valide le code du challenge 2FA |
+| POST | `/logout` | Déconnexion et révocation de session |
+| GET | `/me` | Compte de la session |
+| GET | `/verify-email?token=...` | Vérification email |
+| POST | `/resend-verification` | Renvoi email de vérification |
+| POST | `/forgot-password` | Demande de réinitialisation |
+| POST | `/reset-password` | Réinitialisation par jeton |
+| POST | `/change-password` | Changement de mot de passe de session |
+| POST | `/2fa/setup`, `/2fa/confirm`, `/2fa/disable`, `/2fa/recovery-codes/regenerate` | Gestion 2FA |
 
-Les requêtes modifiant l'état nécessitent le cookie CSRF et l'en-tête `X-CSRF-Token`. Le navigateur utilise `credentials: include`. Le jeton de session n'est jamais exposé au JavaScript.
+### Profils (`/api/profile`, session requise)
+| Méthode | Route | Description |
+|---|---|---|
+| GET | `/` | Lire son profil |
+| PATCH | `/` | Mettre à jour prénom, nom, date de naissance, genre, username |
+| POST | `/avatar` | Avatar WebP (120 Ko maximum) |
 
-## Variables d'environnement serveur
+### Réseau social (`/api/social`, session requise)
+| Méthode | Route | CSRF | Description |
+|---|---|---|---|
+| GET | `/feed` | Non | Fil paginé, compte likes/commentaires et like de l'utilisateur |
+| POST | `/posts` | Oui | Créer un post texte et/ou image |
+| DELETE | `/posts/:postId` | Oui | Supprimer son post |
+| POST | `/posts/:postId/like` | Oui | Basculer like/unlike |
+| GET | `/posts/:postId/comments` | Non | Liste commentaires |
+| POST | `/posts/:postId/comments` | Oui | Ajouter commentaire |
+| GET | `/users/search?q=` | Non | Recherche par prénom, nom ou username |
+| GET | `/users/:uid` | Non | Profil public et 20 posts récents |
+| GET | `/friends` | Non | Liste d'amis |
+| GET | `/friends/requests` | Non | Demandes reçues |
+| POST | `/friends/:uid/request` | Oui | Envoyer demande d'amitié |
+| POST | `/friends/:uid/accept` | Oui | Accepter demande reçue |
+| POST | `/friends/:uid/decline` | Oui | Refuser demande reçue |
+| DELETE | `/friends/:uid` | Oui | Retirer un ami |
+| POST | `/users/:uid/block` | Oui | Bloquer un compte et retirer la relation/demande existante |
+| DELETE | `/users/:uid/block` | Oui | Débloquer un compte |
+| GET | `/blocks` | Non | Liste des comptes bloqués |
+| POST | `/reports` | Oui | Déposer un signalement (user/post/comment/message) |
+| GET | `/conversations` | Non | Liste des conversations |
+| GET | `/messages/:uid` | Non | Messages d'un ami |
+| POST | `/messages/:uid` | Oui | Envoyer un message à un ami |
+| GET | `/notifications` | Non | Notifications |
+| PATCH | `/notifications/:notificationId/read` | Oui | Marquer notification lue |
 
-Copier `.env.example` en `.env` pour le développement.
+Les mutations exigent `X-CSRF-Token` égal au cookie `pal_csrf`. L'APK doit conserver les cookies reçus, récupérer le jeton CSRF avant les mutations et inclure les cookies avec les requêtes.
 
-- `FIREBASE_SERVICE_ACCOUNT_BASE64` : JSON du compte de service encodé en Base64 (serveur uniquement).
-- `FIREBASE_STORAGE_BUCKET` : bucket Firebase Storage.
-- `CORS_ORIGINS` : liste exacte des origines frontend séparées par des virgules.
-- `FRONTEND_URL` : origine frontend, utilisée dans les liens de réinitialisation.
-- `PUBLIC_API_URL` : URL publique de l'API, utilisée dans les liens de vérification.
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM` : transport e-mail.
-- `OPENAI_API_KEY` et `OPENAI_MODEL` : assistant (facultatif).
+## Images
+Les photos de publications sont conservées dans Firestore sous forme de data URI Base64, conformément à l'approche retenue pour Pal. JPEG, PNG et WebP sont acceptés. La taille binaire maximale d'une image de post est 450 Ko; la limite JSON de l'API est 700 Ko. Il faut compresser/redimensionner les images côté APK. Firestore limite les documents à 1 Mio, donc ce stockage Base64 doit rester petit et les posts ne doivent pas contenir d'images brutes trop lourdes. Les avatars WebP sont limités à 120 Ko.
 
-Exemple production :
-```env
-NODE_ENV=production
-CORS_ORIGINS=https://votre-frontend.vercel.app
-FRONTEND_URL=https://votre-frontend.vercel.app
-PUBLIC_API_URL=https://votre-api.vercel.app
-FIREBASE_SERVICE_ACCOUNT_BASE64=...
-FIREBASE_STORAGE_BUCKET=votre-projet.appspot.com
-SMTP_HOST=smtp.votre-fournisseur.com
-SMTP_PORT=587
-SMTP_SECURE=false
-SMTP_USER=...
-SMTP_PASSWORD=...
-MAIL_FROM=OpenDC <noreply@votre-domaine.com>
+## Collections Firestore utilisées
+- `users/{uid}` : profil, hash de mot de passe, paramètres de compte.
+- `authEmailIndex/{hash}` : index email unique.
+- `authUsernameIndex/{username}` : index username unique.
+- `userSearch/{uid}` : champs de recherche normalisés.
+- `authSessions/{hash}` et `authActionTokens/{hash}` : sessions et jetons temporaires.
+- `posts/{postId}` et sous-collections `likes/{uid}`, `comments/{commentId}`.
+- `friendRequests/{pairId}`, `friendships/{pairId}`.
+- `conversations/{pairId}/messages/{messageId}`.
+- `users/{uid}/notifications/{notificationId}`.
+- `users/{uid}/assistantConversations/main/messages/{id}` : historique Pal AI isolé par utilisateur.
+
+## Index de recherche pour comptes existants
+La recherche utilise `userSearch`. Les nouveaux comptes et les profils modifiés alimentent cette collection. Pour les comptes créés avant cette version, lancer une fois la migration après avoir configuré les variables Firebase :
+```bash
+npm run migrate:social-index
 ```
+La migration ne change pas les comptes; elle crée les documents de recherche manquants.
 
-Ne jamais mettre ces secrets dans le frontend ou dans Git.
+## Configuration
+Copier `.env.example` vers `.env` localement ou renseigner les variables dans le déploiement. Variables principales :
+- `FIREBASE_SERVICE_ACCOUNT_BASE64` (secret Admin encodé Base64) ou `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`.
+- `FIREBASE_STORAGE_BUCKET` si nécessaire pour le service existant.
+- `CORS_ORIGINS`, `FRONTEND_URL`, `PUBLIC_API_URL`.
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`.
+- `OPENAI_API_KEY`, `OPENAI_MODEL` (facultatifs pour Pal AI).
+- `TOTP_ENCRYPTION_KEY` : 64 caractères hexadécimaux (32 octets).
 
-## Installation et vérifications
+Ne jamais commit les secrets. Configurer les règles Firestore/Storage du dépôt. Les routes sociales sont développées côté backend, mais elles ne sont pas encore intégrées ni vérifiées depuis l'APK.
 
-Node.js 22+ :
+## Installation / tests
+Node.js 22+:
 ```bash
 npm install
-cp .env.example .env
-npm run dev
-npm test
 npm run check
+npm test
+npm run dev
 ```
 
-`npm test` et `npm run check` vérifient les routes sans avoir besoin d'un compte Firebase configuré. Les parcours inscription/e-mail/session nécessitent les variables Firebase Admin et SMTP.
-
-## Firestore
-
-Le serveur Admin utilise ces collections :
-- `users/{uid}` : profil, adresse e-mail, hash Argon2id, état de vérification.
-- `authEmailIndex/{sha256(email-normalisé)}` : index unique e-mail → UID.
-- `authSessions/{sha256(session-token)}` : UID et expiration de session.
-- `authActionTokens/{sha256(action-token)}` : jetons de vérification et de réinitialisation.
-- `users/{uid}/assistantConversations/main/messages/{id}` : historique IA.
-
-Configurer la politique TTL Firestore sur `expiresAt` pour nettoyer les sessions et jetons expirés. Les règles Firestore et Storage du dépôt refusent l'accès direct client : seul le backend Admin accède aux données.
+Les tests smoke vérifient la santé, les refus de session et le CSRF. Les parcours nécessitant Firestore, SMTP ou OpenAI doivent être testés avec leurs variables de configuration.
 
 ## Déploiement Vercel
+Importer le dépôt, preset `Other`, garder la racine du projet, configurer les variables d'environnement et déployer. `api/index.js` exporte Express. Vérifier `/api/health`.
 
-Importer le dépôt Backend, racine `./`, preset `Other`, puis définir toutes les variables ci-dessus dans Vercel. Le fichier `api/index.js` exporte Express. Vérifier `/api/health`.
-
-## Migration des anciens comptes
-
-Les anciens comptes créés uniquement dans Firebase Authentication ne peuvent pas être convertis automatiquement : Firebase ne fournit pas leurs mots de passe en clair ni leurs hash Argon2id. Les profils Firestore existants peuvent être conservés, mais chaque ancien utilisateur doit créer un nouveau compte avec la nouvelle authentification, ou une migration administrative vérifiée doit être développée avant bascule. Ne jamais importer de mot de passe en clair.
-
-## Limites opérationnelles à régler avant production
-
-- Configurer et tester le SMTP avec un domaine expéditeur vérifié.
-- Définir `PUBLIC_API_URL`, `FRONTEND_URL`, `CORS_ORIGINS` et `FIREBASE_STORAGE_BUCKET` selon les domaines réels.
-- Utiliser un rate limiter distribué (Redis/Upstash) pour une charge serverless multi-instance ; le limiteur actuel est en mémoire.
-- Ajouter un flux de renvoi du mail de vérification et un flux de changement d'adresse e-mail avant de proposer ces actions dans l'interface.
-- Configurer la politique TTL Firestore et surveiller les journaux d'authentification.
-
+## Limites avant production
+- Tester réellement les emails, inscription, sessions et 2FA.
+- Rate limiter en mémoire : prévoir Redis/Upstash pour déploiement multi-instances.
+- Ajouter les index Firestore indiqués dans `firestore.indexes.json` si Firebase les demande.
+- La suppression de compte, la modération humaine/admin, les outils de traitement des signalements et les règles de visibilité avancées ne sont pas encore implémentés. Les endpoints de blocage et de signalement existent, mais le signalement ne déclenche pas encore de traitement automatique.
+- Messages et posts images ne sont pas chiffrés de bout en bout.
+- Le client Android doit intégrer les appels API et les états de chargement/erreur.

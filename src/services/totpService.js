@@ -89,7 +89,7 @@ export async function createTotpEnrollment(email) {
 
   const uri = authenticator.keyuri(
     email,
-    'OpenDC',
+    'Pal',
     secret
   );
 

@@ -21,6 +21,7 @@ const password = z.string().min(8).max(128);
 const registerSchema = z.object({
   firstName: z.string().trim().min(1).max(80),
   lastName: z.string().trim().min(1).max(80),
+  username: z.string().trim().regex(/^[a-zA-Z0-9_]{3,24}$/).optional(),
   birthDate: z.string().min(1).max(20),
   gender: z.enum(['female', 'male', 'other', 'prefer_not_say']),
   email, password
