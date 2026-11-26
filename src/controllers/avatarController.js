@@ -6,14 +6,23 @@ const MAX_AVATAR_SIZE = 120 * 1024;
 export const uploadAvatar = asyncHandler(async (req, res) => {
   requireFirebase();
 
-  if (!req.file) {
+  const encoded = req.body.imageBase64;
+
+  if (typeof encoded !== 'string' || !encoded) {
     throw httpError(400, 'Choisissez une image.', 'INVALID_AVATAR');
   }
 
-  const buffer = req.file.buffer;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    throw httpError(400, 'Données Base64 invalides.', 'INVALID_AVATAR_FORMAT');
+  }
 
-  if (buffer.length > MAX_AVATAR_SIZE) {
-    throw httpError(413, 'La photo compressée ne doit pas dépasser 120 Ko.', 'AVATAR_TOO_LARGE');
+  const buffer = Buffer.from(encoded, 'base64');
+
+  if (
+    buffer.length > MAX_AVATAR_SIZE ||
+    buffer.toString('base64') !== encoded
+  ) {
+    throw httpError(413, 'La photo WebP ne doit pas dépasser 120 Ko.', 'AVATAR_TOO_LARGE');
   }
 
   const isWebP =
@@ -25,15 +34,13 @@ export const uploadAvatar = asyncHandler(async (req, res) => {
     throw httpError(400, 'La photo doit être au format WebP.', 'INVALID_AVATAR_FORMAT');
   }
 
-  const encoded = buffer.toString('base64');
-
   await db.collection('avatars').doc(req.user.uid).set({
     data: encoded,
     contentType: 'image/webp',
     updatedAt: FieldValue.serverTimestamp()
   });
 
-  const photoURL = `data:image/webp;base64,${encoded}`;
-
-  return success(res, { photoURL });
+  return success(res, {
+    photoURL: `data:image/webp;base64,${encoded}`
+  });
 });
