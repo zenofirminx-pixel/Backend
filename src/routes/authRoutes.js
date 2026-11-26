@@ -4,7 +4,7 @@ import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
 import {
   csrf, registerAccount, loginAccount, logoutAccount,
-  currentAccount, verifyAccountEmail, forgotPassword,
+  currentAccount, verifyAccountEmail, verifyAccountPassword, forgotPassword,
   resetAccountPassword, updateAccountPassword,
   resendVerificationEmail, setupTwoFactor, confirmTwoFactor,
   verifyLoginTwoFactorAccount, disableTwoFactorAccount,
@@ -30,6 +30,7 @@ router.get('/csrf', csrf);
 router.get('/me', currentAccount);
 router.get('/verify-email', verifyAccountEmail);
 router.post('/register', authLimiter, requireCsrf, validateBody(registerSchema), registerAccount);
+
 router.post('/login', authLimiter, requireCsrf, validateBody(z.object({ email, password }).strict()), loginAccount);
 router.post('/logout', requireCsrf, logoutAccount);
 router.post('/resend-verification', authLimiter, requireCsrf, validateBody(z.object({ email }).strict()), resendVerificationEmail);
@@ -46,6 +47,10 @@ const twoFactorLimiter = rateLimit({
     message: 'Trop de tentatives de vérification. Veuillez patienter 15 minutes avant de réessayer.'
   }
 });
+
+router.post('/verify-account', requireAuth, requireCsrf, twoFactorLimiter,
+  validateBody(z.object({ password }).strict()),
+  verifyAccountPassword);
 
 router.post('/2fa/login', authLimiter, requireCsrf,
   validateBody(z.object({

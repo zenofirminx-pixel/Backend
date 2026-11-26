@@ -42,54 +42,76 @@ async function sendActionEmail({ to, subject, text, html }) {
 }
 export async function register(input) {
   requireFirebase();
+
   const email = input.email.trim().toLowerCase();
   const key = emailKey(email);
   const uid = randomUUID();
-  const verifyToken = token();
-  const passwordHash = await argon2.hash(input.password, { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 });
+
+  const passwordHash = await argon2.hash(input.password, {
+    type: argon2.argon2id,
+    memoryCost: 19456,
+    timeCost: 2,
+    parallelism: 1
+  });
+
   const userRef = db.collection('users').doc(uid);
   const emailRef = db.collection('authEmailIndex').doc(key);
   const username = (input.username || '').trim().toLowerCase();
-  const usernameRef = username ? db.collection('authUsernameIndex').doc(username) : null;
+  const usernameRef = username
+    ? db.collection('authUsernameIndex').doc(username)
+    : null;
+
   await db.runTransaction(async tx => {
     const existing = await tx.get(emailRef);
     const existingUsername = usernameRef ? await tx.get(usernameRef) : null;
-    if (existing.exists) throw httpError(409, 'Cette adresse e-mail possède déjà un compte.', 'EMAIL_ALREADY_EXISTS');
-    if (existingUsername?.exists) throw httpError(409, 'Ce nom d’utilisateur est déjà utilisé.', 'USERNAME_ALREADY_EXISTS');
+
+    if (existing.exists) {
+      throw httpError(409, 'Cette adresse e-mail possède déjà un compte.', 'EMAIL_ALREADY_EXISTS');
+    }
+
+    if (existingUsername?.exists) {
+      throw httpError(409, 'Ce nom d’utilisateur est déjà utilisé.', 'USERNAME_ALREADY_EXISTS');
+    }
+
     tx.create(emailRef, { uid, email, createdAt: FieldValue.serverTimestamp() });
-    if (usernameRef) tx.create(usernameRef, { uid, username, createdAt: FieldValue.serverTimestamp() });
+
+    if (usernameRef) {
+      tx.create(usernameRef, { uid, username, createdAt: FieldValue.serverTimestamp() });
+    }
+
     tx.create(userRef, {
-      email, emailNormalized: email, passwordHash, emailVerified: false,
-      firstName: input.firstName.trim(), lastName: input.lastName.trim(), username,
-      birthDate: input.birthDate, gender: input.gender,
-      photoURL: '', createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp()
+      email,
+      emailNormalized: email,
+      passwordHash,
+      emailVerified: false,
+      firstName: input.firstName.trim(),
+      lastName: input.lastName.trim(),
+      username,
+      birthDate: input.birthDate,
+      gender: input.gender,
+      photoURL: '',
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
     });
+
     tx.set(db.collection('userSearch').doc(uid), {
-      firstName: input.firstName.trim(), lastName: input.lastName.trim(),
-      firstNameLower: input.firstName.trim().toLowerCase(), lastNameLower: input.lastName.trim().toLowerCase(),
-      username, usernameLower: username,
-      photoURL: '', createdAt: FieldValue.serverTimestamp()
-    });
-    tx.create(db.collection('authActionTokens').doc(sha(verifyToken)), {
-      uid, purpose: 'verify-email', expiresAt: Date.now() + VERIFY_HOURS * 3600000,
+      firstName: input.firstName.trim(),
+      lastName: input.lastName.trim(),
+      firstNameLower: input.firstName.trim().toLowerCase(),
+      lastNameLower: input.lastName.trim().toLowerCase(),
+      username,
+      usernameLower: username,
+      photoURL: '',
       createdAt: FieldValue.serverTimestamp()
     });
   });
-  const link = `${env.publicApiUrl}/api/auth/verify-email?token=${encodeURIComponent(verifyToken)}`;
-  try {
-    await sendActionEmail({
-      to: email, subject: 'Vérifiez votre adresse e-mail Pal',
-      text: `Bonjour ${input.firstName},\n\nConfirmez votre adresse e-mail en ouvrant ce lien : ${link}\nCe lien expire dans 24 heures.`,
-      html: `<p>Bonjour ${escapeHtml(input.firstName)},</p><p>Confirmez votre adresse e-mail Pal :</p><p><a href="${link}">Vérifier mon adresse e-mail</a></p><p>Ce lien expire dans 24 heures.</p>`
-    });
-  } catch (error) {
-    console.error('Échec de l’envoi de vérification :', error.message);
-  }
+
   const sessionToken = token();
   const maxAge = SESSION_DAYS * 86400000;
 
   await db.collection('authSessions').doc(sha(sessionToken)).set({
-    uid, expiresAt: Date.now() + maxAge,
+    uid,
+    expiresAt: Date.now() + maxAge,
     createdAt: FieldValue.serverTimestamp()
   });
 
@@ -97,7 +119,8 @@ export async function register(input) {
     sessionToken,
     maxAge,
     user: safeUser(uid, {
-      email, emailVerified: false,
+      email,
+      emailVerified: false,
       firstName: input.firstName.trim(),
       lastName: input.lastName.trim(),
       username,
@@ -105,7 +128,7 @@ export async function register(input) {
       gender: input.gender,
       photoURL: ''
     }),
-    message: 'Compte créé et connexion effectuée.'
+    message: 'Compte créé. Vérification du compte requise.'
   };
 }
 export async function verifyEmail(rawToken) {
@@ -204,6 +227,40 @@ export async function login(emailInput, password) {
     user: safeUser(uid, user)
   };
 }
+export async function confirmAccountPassword(uid, password) {
+  requireFirebase();
+
+  const userRef = db.collection('users').doc(uid);
+  const snap = await userRef.get();
+
+  if (!snap.exists || !snap.data().passwordHash) {
+    throw httpError(404, 'Compte introuvable.', 'USER_NOT_FOUND');
+  }
+
+  const user = snap.data();
+  const valid = await argon2.verify(user.passwordHash, password).catch(() => false);
+
+  if (!valid) {
+    throw httpError(401, 'Mot de passe incorrect.', 'INVALID_CREDENTIALS');
+  }
+
+  if (!user.emailVerified) {
+    await userRef.update({
+      emailVerified: true,
+      emailVerifiedAt: FieldValue.serverTimestamp(),
+      emailVerificationMethod: 'password_confirmation',
+      updatedAt: FieldValue.serverTimestamp()
+    });
+  }
+
+  const updated = await userRef.get();
+
+  return {
+    message: 'Compte vérifié avec succès.',
+    user: safeUser(uid, updated.data())
+  };
+}
+
 export async function getSessionUser(sessionToken) {
   if (!sessionToken) return null;
   requireFirebase();

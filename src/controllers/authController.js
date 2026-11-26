@@ -1,6 +1,6 @@
 
 import {
-  register, login, logout, getSessionUser, verifyEmail,
+  register, login, logout, getSessionUser, verifyEmail, confirmAccountPassword,
   requestPasswordReset, resetPassword, changePassword,
   resendVerification, beginTwoFactorSetup, confirmTwoFactorSetup,
   verifyLoginTwoFactor, disableTwoFactor,
@@ -26,6 +26,11 @@ export const registerAccount = asyncHandler(async (req, res) => {
   res.cookie(SESSION_COOKIE, result.sessionToken, COOKIE_OPTIONS(result.maxAge));
   return success(res, { message: result.message, user: result.user }, 201);
 });
+export const verifyAccountPassword = asyncHandler(async (req, res) => {
+  const result = await confirmAccountPassword(req.user.uid, req.body.password);
+  return success(res, result);
+});
+
 const TWO_FACTOR_COOKIE = 'pal_2fa_challenge';
 
 export const loginAccount = asyncHandler(async (req, res) => {
