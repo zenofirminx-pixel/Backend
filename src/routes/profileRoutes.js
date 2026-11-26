@@ -10,6 +10,8 @@ const router = Router();
 const profileSchema = z.object({
   firstName: z.string().trim().min(1).max(80).optional(),
   lastName: z.string().trim().min(1).max(80).optional(),
+  username: z.string().trim().min(3).max(24)
+    .regex(/^[a-zA-Z0-9_]+$/).optional(),
   birthDate: z.string().max(20).optional(),
   gender: z.enum(['', 'female', 'male', 'other', 'prefer_not_say']).optional()
 }).strict();
