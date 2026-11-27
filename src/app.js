@@ -47,7 +47,7 @@ const assistantLimiter = rateLimit({
 });
 app.use('/api/social', requireAuth, requireVerifiedEmail, socialRoutes);
 app.use('/api/profile', requireAuth, profileRoutes);
-app.use('/api/assistant', requireAuth, requireCsrf, assistantLimiter, assistantRoutes);
+app.use('/api/assistant', requireAuth, assistantLimiter, assistantRoutes);
 app.use(notFound);
 app.use(errorHandler);
 export default app;
