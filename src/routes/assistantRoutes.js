@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { chat, history } from '../controllers/assistantController.js';
 import { validateBody } from '../middleware/validate.js';
-import { requireCsrf } from '../middleware/csrf.js;
+import { requireCsrf } from '../middleware/csrf.js';
 import { env } from '../config/env.js';
 
 const router = Router();
