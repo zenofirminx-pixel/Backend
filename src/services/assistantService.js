@@ -77,3 +77,32 @@ function sanitizeHistory(history, max) {
   return history.slice(-max).filter((item) => item && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string')
     .map((item) => ({ role: item.role, content: item.content.slice(0, env.assistantMaxMessageChars) }));
 }
+
+
+export async function getConversationHistory(uid) {
+  requireFirebase();
+
+  const ref = db.collection('users')
+    .doc(uid)
+    .collection(HISTORY_COLLECTION)
+    .doc('main')
+    .collection('messages');
+
+  const snap = await ref
+    .orderBy('createdAt', 'desc')
+    .limit(env.assistantMaxHistoryMessages)
+    .get();
+
+  const messages = snap.docs.reverse().map((doc) => {
+    const data = doc.data();
+    return {
+      role: data.role,
+      content: data.content
+    };
+  }).filter((item) =>
+    ['user', 'assistant'].includes(item.role) &&
+    typeof item.content === 'string'
+  );
+
+  return { messages };
+}
