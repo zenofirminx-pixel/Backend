@@ -40,6 +40,11 @@ export const uploadAvatar = asyncHandler(async (req, res) => {
     updatedAt: FieldValue.serverTimestamp()
   });
 
+  await db.collection('userSearch').doc(req.user.uid).set({
+    photoURL: `data:image/webp;base64,${encoded}`,
+    updatedAt: FieldValue.serverTimestamp()
+  }, { merge: true });
+
   return success(res, {
     photoURL: `data:image/webp;base64,${encoded}`
   });

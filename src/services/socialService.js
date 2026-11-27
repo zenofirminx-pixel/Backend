@@ -266,11 +266,51 @@ export async function listConversations(uid) {
 export async function getPublicProfile(viewerUid, uid) {
   requireFirebase();
   if (viewerUid !== uid && await isBlockedEither(viewerUid, uid)) throw httpError(403, 'Ce profil n’est pas accessible.', 'USER_BLOCKED');
+
   const user = await requireUser(uid);
   const avatar = await db.collection('avatars').doc(uid).get();
-  const snap = await db.collection('posts').where('authorUid', '==', uid).orderBy('createdAt', 'desc').limit(20).get();
-  const posts = snap.docs.map(doc => ({ id: doc.id, ...doc.data(), createdAt: dateValue(doc.data().createdAt) }));
-  return { user: cleanUser(uid, { ...user, photoURL: avatar.exists && avatar.data().data ? `data:${avatar.data().contentType || 'image/webp'};base64,${avatar.data().data}` : user.photoURL }), posts };
+  const pair = idPair(viewerUid, uid);
+
+  let relationship = 'none';
+  if (viewerUid === uid) {
+    relationship = 'self';
+  } else {
+    const [friendshipSnap, requestSnap] = await Promise.all([
+      db.collection('friendships').doc(pair).get(),
+      db.collection('friendRequests').doc(pair).get()
+    ]);
+
+    if (friendshipSnap.exists && friendshipSnap.data().status === 'accepted') {
+      relationship = 'friends';
+    } else if (requestSnap.exists && requestSnap.data().status === 'pending') {
+      relationship = requestSnap.data().fromUid === viewerUid
+        ? 'outgoing_pending'
+        : 'incoming_pending';
+    }
+  }
+
+  const snap = await db.collection('posts')
+    .where('authorUid', '==', uid)
+    .orderBy('createdAt', 'desc')
+    .limit(20)
+    .get();
+
+  const posts = snap.docs.map(doc => ({
+    id: doc.id,
+    ...doc.data(),
+    createdAt: dateValue(doc.data().createdAt)
+  }));
+
+  return {
+    user: cleanUser(uid, {
+      ...user,
+      photoURL: avatar.exists && avatar.data().data
+        ? `data:${avatar.data().contentType || 'image/webp'};base64,${avatar.data().data}`
+        : user.photoURL
+    }),
+    relationship,
+    posts
+  };
 }
 
 export async function declineFriendRequest(uid, otherUid) {
