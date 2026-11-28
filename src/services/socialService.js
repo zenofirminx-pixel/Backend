@@ -153,9 +153,29 @@ export async function searchUsers(uid, query) {
   const blocked = await blockedIds(uid);
   const map = new Map();
   queries.forEach(snap => snap.docs.forEach(doc => {
-    if (doc.id !== uid && !blocked.has(doc.id)) map.set(doc.id, cleanUser(doc.id, doc.data()));
+    if (doc.id !== uid && !blocked.has(doc.id)) {
+      map.set(doc.id, cleanUser(doc.id, doc.data()));
+    }
   }));
-  return [...map.values()].slice(0, 30);
+
+  return Promise.all([...map.entries()].slice(0, 30).map(async ([otherUid, user]) => {
+    const pair = idPair(uid, otherUid);
+    const [friendshipSnap, requestSnap] = await Promise.all([
+      db.collection('friendships').doc(pair).get(),
+      db.collection('friendRequests').doc(pair).get()
+    ]);
+
+    let relationship = 'none';
+    if (friendshipSnap.exists && friendshipSnap.data().status === 'accepted') {
+      relationship = 'friends';
+    } else if (requestSnap.exists && requestSnap.data().status === 'pending') {
+      relationship = requestSnap.data().fromUid === uid
+        ? 'outgoing_pending'
+        : 'incoming_pending';
+    }
+
+    return { ...user, relationship };
+  }));
 }
 export async function sendFriendRequest(uid, targetUid) {
   requireFirebase();
