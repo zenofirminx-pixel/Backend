@@ -1,6 +1,9 @@
 import * as social from '../services/socialService.js';
 import { success, asyncHandler } from '../utils/http.js';
 export const feed = asyncHandler(async (req, res) => success(res, await social.getFeed({ uid: req.user.uid, limit: req.query.limit, before: req.query.before })));
+export const stories = asyncHandler(async (req, res) => success(res, await social.getStories(req.user.uid)));
+export const createStory = asyncHandler(async (req, res) => success(res, { story: await social.createStory(req.user.uid, req.body) }, 201));
+export const deleteStory = asyncHandler(async (req, res) => success(res, await social.deleteStory(req.user.uid, req.params.storyId)));
 export const createPost = asyncHandler(async (req, res) => success(res, { post: await social.createPost(req.user.uid, req.body) }, 201));
 export const deletePost = asyncHandler(async (req, res) => success(res, await social.deletePost(req.user.uid, req.params.postId)));
 export const likePost = asyncHandler(async (req, res) => success(res, await social.toggleLike(req.user.uid, req.params.postId)));

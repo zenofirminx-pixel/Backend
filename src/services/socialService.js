@@ -370,3 +370,130 @@ export async function reportContent(uid, { targetType, targetId, reason, details
   const ref = await db.collection('moderationReports').add({ reporterUid: uid, targetType, targetId, reason, details: details.trim(), status: 'open', createdAt: FieldValue.serverTimestamp() });
   return { reportId: ref.id, submitted: true };
 }
+
+// STORIES — Photos visibles pendant 24 heures.
+export async function createStory(uid, { photoData, photoMimeType }) {
+  requireFirebase();
+
+  const match = typeof photoData === 'string'
+    ? photoData.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/)
+    : null;
+
+  if (!match || match[1] !== photoMimeType) {
+    throw httpError(400, 'Photo de story invalide.', 'INVALID_STORY');
+  }
+
+  const bytes = Buffer.from(match[2], 'base64');
+  if (!bytes.length || bytes.length > 400_000 ||
+      bytes.toString('base64') !== match[2]) {
+    throw httpError(413, 'Photo de story trop volumineuse ou invalide.', 'STORY_IMAGE_TOO_LARGE');
+  }
+
+  const authorData = await requireUser(uid);
+  const storyRef = db.collection('stories').doc();
+  const now = Date.now();
+
+  await storyRef.set({
+    authorUid: uid,
+    author: cleanUser(uid, authorData),
+    photoData,
+    photoMimeType,
+    createdAt: FieldValue.serverTimestamp(),
+    expiresAt: new Date(now + 24 * 60 * 60 * 1000)
+  });
+
+  return {
+    id: storyRef.id,
+    author: cleanUser(uid, authorData),
+    photoData,
+    photoMimeType,
+    createdAt: now,
+    expiresAt: now + 24 * 60 * 60 * 1000
+  };
+}
+
+export async function getStories(uid) {
+  requireFirebase();
+
+  const [friends, blocked] = await Promise.all([
+    listFriends(uid),
+    blockedIds(uid)
+  ]);
+
+  const allowedUids = [uid, ...friends.map(friend => friend.uid)]
+    .filter(id => !blocked.has(id));
+
+  const batches = [];
+  for (let i = 0; i < allowedUids.length; i += 30) {
+    batches.push(allowedUids.slice(i, i + 30));
+  }
+
+  const snapshots = await Promise.all(batches.map(ids =>
+    db.collection('stories')
+      .where('authorUid', 'in', ids)
+      .get()
+  ));
+
+  const now = Date.now();
+  const grouped = new Map();
+
+  for (const snapshot of snapshots) {
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      const expiresAt = dateValue(data.expiresAt);
+
+      if (!expiresAt || expiresAt <= now) continue;
+
+      if (!grouped.has(data.authorUid)) {
+        grouped.set(data.authorUid, {
+          author: cleanUser(data.authorUid, data.author || {}),
+          stories: []
+        });
+      }
+
+      grouped.get(data.authorUid).stories.push({
+        id: doc.id,
+        photoData: data.photoData,
+        photoMimeType: data.photoMimeType,
+        createdAt: dateValue(data.createdAt),
+        expiresAt
+      });
+    }
+  }
+
+  const result = [...grouped.values()];
+  for (const group of result) {
+    group.stories.sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  result.sort((a, b) => {
+    if (a.author.uid === uid) return -1;
+    if (b.author.uid === uid) return 1;
+    return b.stories[b.stories.length - 1].createdAt -
+           a.stories[a.stories.length - 1].createdAt;
+  });
+
+  return { stories: result };
+}
+
+export async function deleteStory(uid, storyId) {
+  requireFirebase();
+
+  if (!storyId || typeof storyId !== 'string') {
+    throw httpError(400, 'Identifiant de story invalide.', 'INVALID_STORY_ID');
+  }
+
+  const ref = db.collection('stories').doc(storyId);
+  const snap = await ref.get();
+
+  if (!snap.exists) {
+    throw httpError(404, 'Story introuvable.', 'STORY_NOT_FOUND');
+  }
+
+  if (snap.data().authorUid !== uid) {
+    throw httpError(403, 'Tu ne peux supprimer que tes propres stories.', 'STORY_FORBIDDEN');
+  }
+
+  await ref.delete();
+  return { deleted: true };
+}

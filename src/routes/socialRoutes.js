@@ -5,10 +5,18 @@ import { requireCsrf } from '../middleware/csrf.js';
 import * as controller from '../controllers/socialController.js';
 const router = Router();
 const postSchema = z.object({ text: z.string().max(5000).optional().default(''), photoData: z.string().max(620000).nullable().optional(), photoMimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']).nullable().optional() }).strict();
+const storySchema = z.object({
+  photoData: z.string().max(560000),
+  photoMimeType: z.enum(['image/jpeg', 'image/png', 'image/webp'])
+}).strict();
 const commentSchema = z.object({ text: z.string().trim().min(1).max(2000) }).strict();
 const messageSchema = z.object({ text: z.string().trim().min(1).max(4000) }).strict();
 const reportSchema = z.object({ targetType: z.enum(['user', 'post', 'comment', 'message']), targetId: z.string().min(1).max(160), reason: z.enum(['spam', 'harassment', 'inappropriate', 'impersonation', 'other']), details: z.string().max(1000).optional().default('') }).strict();
 router.get('/feed', controller.feed);
+router.get('/stories', controller.stories);
+router.post('/stories', requireCsrf, validateBody(storySchema), controller.createStory);
+router.delete('/stories/:storyId', requireCsrf, controller.deleteStory);
+
 router.post('/posts', requireCsrf, validateBody(postSchema), controller.createPost);
 router.delete('/posts/:postId', requireCsrf, controller.deletePost);
 router.post('/posts/:postId/like', requireCsrf, controller.likePost);
