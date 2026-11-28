@@ -223,38 +223,156 @@ export async function listFriendRequests(uid) {
   const snap = await db.collection('friendRequests').where('toUid', '==', uid).where('status', '==', 'pending').limit(50).get();
   return Promise.all(snap.docs.map(async doc => ({ id: doc.id, ...doc.data(), sender: cleanUser(doc.data().fromUid, await requireUser(doc.data().fromUid)) })));
 }
-async function requireFriendship(uid, otherUid) {
-  if (await isBlockedEither(uid, otherUid)) throw httpError(403, 'Cette action n’est pas autorisée.', 'USER_BLOCKED');
-  const ref = db.collection('friendships').doc(idPair(uid, otherUid));
-  const snap = await ref.get();
-  if (!snap.exists || snap.data().status !== 'accepted') throw httpError(403, 'La messagerie est réservée aux amis.', 'FRIENDS_ONLY');
-  return ref;
+async function requireConversationAccess(uid, otherUid) {
+  if (await isBlockedEither(uid, otherUid)) {
+    throw httpError(403, 'Cette action n’est pas autorisée.', 'USER_BLOCKED');
+  }
+
+  const pair = idPair(uid, otherUid);
+  const [friendship, request] = await Promise.all([
+    db.collection('friendships').doc(pair).get(),
+    db.collection('friendRequests').doc(pair).get()
+  ]);
+
+  if (friendship.exists && friendship.data().status === 'accepted') {
+    return { friends: true };
+  }
+
+  if (
+    request.exists &&
+    request.data().status === 'pending' &&
+    request.data().firstMessageSent === true &&
+    [request.data().fromUid, request.data().toUid].includes(uid) &&
+    [request.data().fromUid, request.data().toUid].includes(otherUid)
+  ) {
+    return { friends: false, request: request.data() };
+  }
+
+  throw httpError(403, 'La messagerie est réservée aux amis ou aux invitations en attente avec premier message.', 'FRIENDS_ONLY');
 }
+
 export async function listMessages(uid, otherUid, limit = 40) {
   requireFirebase();
-  await requireFriendship(uid, otherUid);
+  await requireConversationAccess(uid, otherUid);
+
   const convoRef = db.collection('conversations').doc(idPair(uid, otherUid));
-  const snap = await convoRef.collection('messages').orderBy('createdAt', 'desc').limit(Math.min(Math.max(Number(limit) || 40, 1), 100)).get();
-  return snap.docs.reverse().map(doc => ({ id: doc.id, ...doc.data(), createdAt: dateValue(doc.data().createdAt) }));
+  const snap = await convoRef.collection('messages')
+    .orderBy('createdAt', 'desc')
+    .limit(Math.min(Math.max(Number(limit) || 40, 1), 100))
+    .get();
+
+  return snap.docs.reverse().map(doc => ({
+    id: doc.id,
+    ...doc.data(),
+    createdAt: dateValue(doc.data().createdAt)
+  }));
 }
+
 export async function sendMessage(uid, otherUid, text) {
   requireFirebase();
+
   const value = String(text || '').trim();
-  if (!value || value.length > 4000) throw httpError(400, 'Message vide ou trop long.', 'INVALID_MESSAGE');
-  await requireFriendship(uid, otherUid);
+  if (!value || value.length > 4000) {
+    throw httpError(400, 'Message vide ou trop long.', 'INVALID_MESSAGE');
+  }
+
+  if (await isBlockedEither(uid, otherUid)) {
+    throw httpError(403, 'Cette action n’est pas autorisée.', 'USER_BLOCKED');
+  }
+
   const sender = await requireUser(uid);
-  const convoRef = db.collection('conversations').doc(idPair(uid, otherUid));
+  const pair = idPair(uid, otherUid);
+  const convoRef = db.collection('conversations').doc(pair);
   const messageRef = convoRef.collection('messages').doc();
-  const friendshipRef = db.collection('friendships').doc(idPair(uid, otherUid));
+  const friendshipRef = db.collection('friendships').doc(pair);
+  const requestRef = db.collection('friendRequests').doc(pair);
+
+  let acceptedAutomatically = false;
+
   await db.runTransaction(async tx => {
-    const friendship = await tx.get(friendshipRef);
-    if (!friendship.exists || friendship.data().status !== 'accepted') throw httpError(403, 'La messagerie est réservée aux amis.', 'FRIENDS_ONLY');
-    tx.set(convoRef, { members: [uid, otherUid].sort(), updatedAt: FieldValue.serverTimestamp(), lastMessage: value.slice(0, 140), lastSenderUid: uid }, { merge: true });
-    tx.create(messageRef, { senderUid: uid, text: value, createdAt: FieldValue.serverTimestamp() });
+    const [friendship, request] = await Promise.all([
+      tx.get(friendshipRef),
+      tx.get(requestRef)
+    ]);
+
+    const isFriend =
+      friendship.exists && friendship.data().status === 'accepted';
+
+    if (!isFriend) {
+      if (!request.exists || request.data().status !== 'pending') {
+        throw httpError(403, 'Une invitation est nécessaire pour démarrer une conversation.', 'FRIENDS_ONLY');
+      }
+
+      const data = request.data();
+
+      if (
+        data.fromUid === uid &&
+        data.toUid === otherUid &&
+        data.firstMessageSent !== true
+      ) {
+        tx.update(requestRef, {
+          firstMessageSent: true,
+          firstMessageSentAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp()
+        });
+      } else if (
+        data.toUid === uid &&
+        data.fromUid === otherUid &&
+        data.firstMessageSent === true
+      ) {
+        tx.set(friendshipRef, {
+          users: [uid, otherUid].sort(),
+          status: 'accepted',
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp()
+        });
+
+        tx.update(requestRef, {
+          status: 'accepted',
+          acceptedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp()
+        });
+
+        acceptedAutomatically = true;
+      } else {
+        throw httpError(403, 'En attente de la réponse à la première invitation.', 'FRIEND_REQUEST_PENDING');
+      }
+    }
+
+    tx.set(convoRef, {
+      members: [uid, otherUid].sort(),
+      updatedAt: FieldValue.serverTimestamp(),
+      lastMessage: value.slice(0, 140),
+      lastSenderUid: uid
+    }, { merge: true });
+
+    tx.create(messageRef, {
+      senderUid: uid,
+      text: value,
+      createdAt: FieldValue.serverTimestamp()
+    });
   });
-  await notify(otherUid, { type: 'message', actorUid: uid, conversationId: convoRef.id, messageId: messageRef.id });
-  return { id: messageRef.id, senderUid: uid, text: value, createdAt: Date.now(), sender: cleanUser(uid, sender) };
+
+  if (acceptedAutomatically) {
+    await notify(otherUid, { type: 'friend_accepted', actorUid: uid });
+  }
+
+  await notify(otherUid, {
+    type: 'message',
+    actorUid: uid,
+    conversationId: convoRef.id,
+    messageId: messageRef.id
+  });
+
+  return {
+    id: messageRef.id,
+    senderUid: uid,
+    text: value,
+    createdAt: Date.now(),
+    sender: cleanUser(uid, sender)
+  };
 }
+
 export async function listNotifications(uid, limit = 50) {
   requireFirebase();
   const snap = await db.collection('users').doc(uid).collection('notifications').orderBy('createdAt', 'desc').limit(Math.min(Math.max(Number(limit) || 50, 1), 100)).get();
@@ -275,9 +393,11 @@ export async function listConversations(uid) {
     const data = doc.data();
     const otherUid = (data.members || []).find(member => member !== uid);
     if (!otherUid) return null;
-    let friendship;
-    try { await requireFriendship(uid, otherUid); friendship = true; } catch { friendship = false; }
-    if (!friendship) return null;
+    try {
+      await requireConversationAccess(uid, otherUid);
+    } catch {
+      return null;
+    }
     const other = await requireUser(otherUid);
     return { id: doc.id, user: cleanUser(otherUid, other), lastMessage: data.lastMessage || '', lastSenderUid: data.lastSenderUid || '', updatedAt: dateValue(data.updatedAt) };
   }));
